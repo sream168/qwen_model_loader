@@ -1,0 +1,18 @@
+{
+  "model_dir": "/home/admin/Downloads",
+  "model_mapping": {
+    "Qwen3.5-0.8B": "Qwen3.5-0.8B-Q4_K_M.gguf"
+  },
+  "default_model": "Qwen3.5-0.8B",
+  "generation_defaults": {
+    "temperature": 0.7,
+    "max_tokens": 512,
+    "top_p": 0.9
+  },
+  "max_loaded_models": 1,
+  "engine_type": "llama_server",
+  "llama_server_path": "/home/admin/llama.cpp/build/bin/llama-server",
+  "n_ctx": 4096,
+  "n_threads": 8,
+  "startup_timeout": 60
+}
