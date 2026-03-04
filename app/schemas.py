@@ -6,9 +6,20 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class ContentPart(BaseModel):
+    """多模态内容块：文本或图片。"""
+    type: Literal["text", "image_url"]
+    text: str | None = None
+    image_url: dict[str, str] | None = None
+
+
 class Message(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    # 纯文本字符串或多模态内容块列表（OpenAI vision 格式）
+    content: str | list[ContentPart] | None = None
+    # Function Calling 相关字段
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
 
 
 class OpenAIChatRequest(BaseModel):
@@ -18,6 +29,9 @@ class OpenAIChatRequest(BaseModel):
     temperature: float | None = None
     max_tokens: int | None = None
     top_p: float | None = None
+    # Function Calling 支持
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
 
 
 class OllamaChatRequest(BaseModel):
@@ -55,6 +69,8 @@ class ServerConfig(BaseModel):
     n_ctx: int = Field(default=4096, ge=512, le=131072)
     n_threads: int = Field(default=8, ge=1, le=128)
     startup_timeout: int = Field(default=60, ge=5, le=300)
+    # 多模态视觉投影文件路径，留空则不启用视觉能力
+    mmproj_path: str = ""
 
 
 class PartialGenerationDefaults(BaseModel):
@@ -74,6 +90,7 @@ class ConfigPatch(BaseModel):
     n_ctx: int | None = Field(default=None, ge=512, le=131072)
     n_threads: int | None = Field(default=None, ge=1, le=128)
     startup_timeout: int | None = Field(default=None, ge=5, le=300)
+    mmproj_path: str | None = None
 
 
 class HealthResponse(BaseModel):

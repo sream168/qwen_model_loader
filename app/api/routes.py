@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.schemas import (
     ConfigPatch,
     HealthResponse,
+    Message,
     ModelCard,
     OllamaChatRequest,
     OllamaGenerateRequest,
@@ -75,6 +76,11 @@ def openai_chat(req: OpenAIChatRequest, service: ChatService = Depends(get_servi
         "max_tokens": req.max_tokens,
         "top_p": req.top_p,
     }
+    # 透传 Function Calling 参数
+    if req.tools:
+        options["tools"] = req.tools
+    if req.tool_choice is not None:
+        options["tool_choice"] = req.tool_choice
 
     if req.stream:
         model, generator = service.stream_chat(req.model, req.messages, overrides=options)
@@ -101,13 +107,15 @@ def openai_chat(req: OpenAIChatRequest, service: ChatService = Depends(get_servi
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 
-    model, text = service.chat(req.model, req.messages, overrides=options)
+    model, choice = service.chat(req.model, req.messages, overrides=options)
+    # choice 已包含 message、finish_reason，可能包含 tool_calls
+    choice.setdefault("index", 0)
     return {
         "id": request_id,
         "object": "chat.completion",
         "created": int(datetime.now(timezone.utc).timestamp()),
         "model": model,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "choices": [choice],
     }
 
 
@@ -138,7 +146,8 @@ def ollama_chat(req: OllamaChatRequest, service: ChatService = Depends(get_servi
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 
-    model, text = service.chat(req.model, req.messages, options=req.options)
+    model, choice = service.chat(req.model, req.messages, options=req.options)
+    text = choice.get("message", {}).get("content", "")
     return JSONResponse(
         {
             "model": model,
@@ -156,8 +165,6 @@ def ollama_generate(req: OllamaGenerateRequest, service: ChatService = Depends(g
     if req.system:
         messages.append({"role": "system", "content": req.system})
     messages.append({"role": "user", "content": req.prompt})
-
-    from app.schemas import Message
 
     msg_objs = [Message(**m) for m in messages]
 
@@ -186,7 +193,8 @@ def ollama_generate(req: OllamaGenerateRequest, service: ChatService = Depends(g
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
 
-    model, text = service.chat(req.model, msg_objs, options=req.options)
+    model, choice = service.chat(req.model, msg_objs, options=req.options)
+    text = choice.get("message", {}).get("content", "")
     return {
         "model": model,
         "created_at": service.now(),

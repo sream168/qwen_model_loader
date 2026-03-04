@@ -7,7 +7,7 @@ from app.schemas import Message
 
 
 class LlamaCppEngine(BaseEngine):
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, n_ctx: int = 4096, n_threads: int = 8):
         try:
             import llama_cpp
             from llama_cpp import Llama
@@ -17,8 +17,8 @@ class LlamaCppEngine(BaseEngine):
         try:
             self._llm = Llama(
                 model_path=model_path,
-                n_ctx=4096,
-                n_threads=8,
+                n_ctx=n_ctx,
+                n_threads=n_threads,
                 n_batch=512,
                 verbose=False,
             )
@@ -33,9 +33,19 @@ class LlamaCppEngine(BaseEngine):
             raise
 
     def _to_payload(self, messages: list[Message]) -> list[dict[str, str]]:
-        return [{"role": m.role, "content": m.content} for m in messages]
+        # llama-cpp-python 不支持多模态，提取纯文本
+        result = []
+        for m in messages:
+            if m.content is None:
+                result.append({"role": m.role, "content": ""})
+            elif isinstance(m.content, str):
+                result.append({"role": m.role, "content": m.content})
+            else:
+                text_parts = [p.text for p in m.content if p.type == "text" and p.text]
+                result.append({"role": m.role, "content": " ".join(text_parts)})
+        return result
 
-    def chat(self, messages: list[Message], **kwargs) -> str:
+    def chat(self, messages: list[Message], **kwargs) -> dict:
         response = self._llm.create_chat_completion(
             messages=self._to_payload(messages),
             temperature=kwargs.get("temperature", 0.7),
@@ -43,7 +53,7 @@ class LlamaCppEngine(BaseEngine):
             top_p=kwargs.get("top_p", 0.9),
             stream=False,
         )
-        return response["choices"][0]["message"]["content"]
+        return response["choices"][0]
 
     def stream_chat(self, messages: list[Message], **kwargs) -> Iterator[str]:
         chunks = self._llm.create_chat_completion(

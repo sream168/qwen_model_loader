@@ -46,10 +46,15 @@ class ModelManager:
                 n_ctx=cfg.n_ctx,
                 n_threads=cfg.n_threads,
                 startup_timeout=cfg.startup_timeout,
+                mmproj_path=cfg.mmproj_path,
             )
         else:
             from app.engine.llama_engine import LlamaCppEngine
-            return LlamaCppEngine(model_path=model_path)
+            return LlamaCppEngine(
+                model_path=model_path,
+                n_ctx=cfg.n_ctx,
+                n_threads=cfg.n_threads,
+            )
 
     def get_engine(self, model_name: str) -> BaseEngine:
         """获取指定模型的引擎实例，使用 LRU 缓存策略。

@@ -8,7 +8,7 @@ from app.schemas import Message
 
 class BaseEngine(ABC):
     @abstractmethod
-    def chat(self, messages: list[Message], **kwargs) -> str:
+    def chat(self, messages: list[Message], **kwargs) -> dict | str:
         raise NotImplementedError
 
     @abstractmethod

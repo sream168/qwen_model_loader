@@ -48,6 +48,7 @@ class LlamaServerEngine(BaseEngine):
         n_ctx: int = 4096,
         n_threads: int = 8,
         startup_timeout: int = 60,
+        mmproj_path: str = "",
     ):
         self._port = _find_free_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
@@ -64,27 +65,31 @@ class LlamaServerEngine(BaseEngine):
             "--threads", str(n_threads),
         ]
 
+        # 多模态视觉投影文件
+        if mmproj_path:
+            cmd.extend(["--mmproj", mmproj_path])
+
         # 使用临时日志文件代替 PIPE，避免缓冲区满导致死锁
         log_dir = Path(tempfile.gettempdir()) / "llama_server_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         self._log_file = log_dir / f"llama-server-{self._port}.log"
-        log_handle = open(self._log_file, "w")
 
         logger.info("启动 llama-server: %s (日志: %s)", " ".join(cmd), self._log_file)
         try:
-            self._process = subprocess.Popen(
-                cmd,
-                stdout=log_handle,
-                stderr=subprocess.STDOUT,
-            )
+            log_handle = open(self._log_file, "w")
+            try:
+                self._process = subprocess.Popen(
+                    cmd,
+                    stdout=log_handle,
+                    stderr=subprocess.STDOUT,
+                )
+            finally:
+                log_handle.close()
         except FileNotFoundError:
-            log_handle.close()
             raise RuntimeError(
                 f"llama-server 二进制文件未找到: {llama_server_path}。"
                 "请先编译 llama.cpp 或检查路径配置。"
             )
-        finally:
-            log_handle.close()
 
         # 轮询 /health 等待服务就绪
         self._wait_for_ready(startup_timeout)
@@ -132,19 +137,57 @@ class LlamaServerEngine(BaseEngine):
             f"llama-server 启动超时（{timeout}s）。日志: {log_tail}"
         )
 
-    def _to_payload(self, messages: list[Message]) -> list[dict[str, str]]:
-        """将 Message 列表转换为 OpenAI 兼容格式。"""
-        return [{"role": m.role, "content": m.content} for m in messages]
+    def _to_payload(self, messages: list[Message]) -> list[dict]:
+        """将 Message 列表转换为 OpenAI 兼容格式。
 
-    def chat(self, messages: list[Message], **kwargs) -> str:
-        """非流式聊天推理。"""
-        payload = {
+        支持纯文本、多模态（ContentPart 列表）以及 Function Calling 消息。
+        """
+        result = []
+        for m in messages:
+            msg: dict = {"role": m.role}
+
+            # 处理 content 字段
+            if m.content is None:
+                msg["content"] = None
+            elif isinstance(m.content, str):
+                msg["content"] = m.content
+            else:
+                # 多模态内容：转换为 OpenAI vision 格式
+                parts = []
+                for part in m.content:
+                    if part.type == "text":
+                        parts.append({"type": "text", "text": part.text or ""})
+                    elif part.type == "image_url" and part.image_url:
+                        parts.append({"type": "image_url", "image_url": part.image_url})
+                msg["content"] = parts
+
+            # Function Calling 字段
+            if m.tool_calls:
+                msg["tool_calls"] = m.tool_calls
+            if m.tool_call_id:
+                msg["tool_call_id"] = m.tool_call_id
+
+            result.append(msg)
+        return result
+
+    def chat(self, messages: list[Message], **kwargs) -> dict:
+        """非流式聊天推理。
+
+        返回完整的 choice 字典，支持纯文本和 Function Calling 两种响应格式。
+        """
+        payload: dict = {
             "messages": self._to_payload(messages),
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 512),
             "top_p": kwargs.get("top_p", 0.9),
             "stream": False,
         }
+
+        # 透传 Function Calling 参数
+        if kwargs.get("tools"):
+            payload["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice") is not None:
+            payload["tool_choice"] = kwargs["tool_choice"]
 
         try:
             resp = httpx.post(
@@ -154,7 +197,7 @@ class LlamaServerEngine(BaseEngine):
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            return data["choices"][0]
         except httpx.ConnectError:
             raise RuntimeError("llama-server 连接失败，子进程可能已退出")
         except httpx.TimeoutException:
@@ -164,13 +207,18 @@ class LlamaServerEngine(BaseEngine):
 
     def stream_chat(self, messages: list[Message], **kwargs) -> Iterator[str]:
         """流式聊天推理，通过 SSE 逐块返回内容。"""
-        payload = {
+        payload: dict = {
             "messages": self._to_payload(messages),
             "temperature": kwargs.get("temperature", 0.7),
             "max_tokens": kwargs.get("max_tokens", 512),
             "top_p": kwargs.get("top_p", 0.9),
             "stream": True,
         }
+
+        if kwargs.get("tools"):
+            payload["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice") is not None:
+            payload["tool_choice"] = kwargs["tool_choice"]
 
         try:
             with httpx.stream(

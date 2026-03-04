@@ -29,12 +29,29 @@ class ChatService:
             result.update({k: v for k, v in overrides.items() if v is not None})
         return result
 
-    def chat(self, model: str | None, messages: list[Message], options: dict | None = None, overrides: dict | None = None) -> tuple[str, str]:
+    def chat(
+        self,
+        model: str | None,
+        messages: list[Message],
+        options: dict | None = None,
+        overrides: dict | None = None,
+    ) -> tuple[str, dict]:
+        """返回 (model_name, choice_dict)。
+
+        choice_dict 为 OpenAI 格式的 choice 对象，包含 message 和可能的 tool_calls。
+        """
         target = self.resolve_model(model)
         params = self._merge_options(options, overrides)
         engine = self.model_manager.get_engine(target)
-        text = engine.chat(messages, **params)
-        return target, text
+        result = engine.chat(messages, **params)
+        # 兼容旧引擎返回纯字符串的情况
+        if isinstance(result, str):
+            result = {
+                "index": 0,
+                "message": {"role": "assistant", "content": result},
+                "finish_reason": "stop",
+            }
+        return target, result
 
     def stream_chat(
         self,

@@ -5,7 +5,9 @@
 ## 特性
 
 - **双引擎架构**：默认使用 `llama-server` 子进程引擎（支持最新 GGUF 架构），可选 `llama-cpp-python` 绑定引擎
-- **OpenAI 兼容**：`/v1/chat/completions`（支持流式 SSE）
+- **多模态视觉**：支持图片理解（通过 `mmproj` 视觉投影文件），兼容 OpenAI Vision 格式
+- **Function Calling**：透传 `tools` / `tool_choice` 参数，支持工具调用（兼容 OpenClaw 等 AI 助手框架）
+- **OpenAI 兼容**：`/v1/chat/completions`（支持流式 SSE、多模态、Function Calling）
 - **Ollama 兼容**：`/api/chat`、`/api/generate`（支持流式 NDJSON）
 - **通用接口**：`/health`、`/models`、`/v1/models`、`/api/tags`
 - **配置管理**：`/config` 获取和动态更新模型映射及推理参数
@@ -85,6 +87,14 @@ cmake --build /home/admin/llama.cpp/build --target llama-server -j$(nproc)
 ls -lh /home/admin/Downloads/Qwen3.5-0.8B-Q4_K_M.gguf
 ```
 
+如需视觉能力（图片理解），还需下载对应的多模态投影文件：
+
+```bash
+# 下载 mmproj 视觉投影文件
+# huggingface-cli download Qwen/Qwen3.5-0.8B-GGUF mmproj-BF16.gguf --local-dir /home/admin/Downloads
+ls -lh /home/admin/Downloads/mmproj-BF16.gguf
+```
+
 ### 4. 安装项目
 
 ```bash
@@ -160,6 +170,7 @@ C:\llama.cpp\build\bin\Release\llama-server.exe --version
 
 ```
 C:\Models\Qwen3.5-0.8B-Q4_K_M.gguf
+C:\Models\mmproj-BF16.gguf          # 可选，启用视觉能力时需要
 ```
 
 ### 4. 安装项目
@@ -198,7 +209,8 @@ pip install -e ".[test]"
   "llama_server_path": "C:\\llama.cpp\\build\\bin\\Release\\llama-server.exe",
   "n_ctx": 4096,
   "n_threads": 8,
-  "startup_timeout": 60
+  "startup_timeout": 60,
+  "mmproj_path": "C:\\Models\\mmproj-BF16.gguf"
 }
 ```
 
@@ -244,7 +256,8 @@ Invoke-RestMethod -Uri http://localhost:30007/v1/chat/completions `
   "llama_server_path": "/home/admin/llama.cpp/build/bin/llama-server",
   "n_ctx": 4096,
   "n_threads": 8,
-  "startup_timeout": 60
+  "startup_timeout": 60,
+  "mmproj_path": "/home/admin/Downloads/mmproj-BF16.gguf"
 }
 ```
 
@@ -260,6 +273,7 @@ Invoke-RestMethod -Uri http://localhost:30007/v1/chat/completions `
 | `n_ctx` | int | `4096` | 上下文窗口大小（512-131072） |
 | `n_threads` | int | `8` | 推理线程数（1-128） |
 | `startup_timeout` | int | `60` | llama-server 启动超时秒数（5-300） |
+| `mmproj_path` | string | `""` | 多模态视觉投影文件路径，留空则不启用视觉能力 |
 
 ### 引擎类型选择
 
@@ -315,6 +329,70 @@ curl -N http://localhost:30007/v1/chat/completions \
   }'
 ```
 
+#### 多模态视觉（图片理解）
+
+需要在配置中设置 `mmproj_path` 指向视觉投影文件。请求格式兼容 OpenAI Vision API：
+
+```bash
+curl http://localhost:30007/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}},
+        {"type": "text", "text": "这张图片里有什么？"}
+      ]
+    }],
+    "max_tokens": 256
+  }'
+```
+
+> `image_url` 支持 HTTP/HTTPS 链接和 `data:image/...;base64,...` 格式的 Base64 编码图片。
+
+#### Function Calling（工具调用）
+
+支持 OpenAI 标准的 Function Calling 格式，可与 OpenClaw 等 AI 助手框架集成：
+
+```bash
+curl http://localhost:30007/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [{"role":"user","content":"北京今天天气怎么样？"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "获取指定城市的天气信息",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {"type": "string", "description": "城市名称"}
+          },
+          "required": ["city"]
+        }
+      }
+    }],
+    "tool_choice": "auto"
+  }'
+```
+
+模型返回 `tool_calls` 后，将工具执行结果发送回继续对话：
+
+```bash
+curl http://localhost:30007/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "messages": [
+      {"role":"user","content":"北京今天天气怎么样？"},
+      {"role":"assistant","content":null,"tool_calls":[{"id":"call_123","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]},
+      {"role":"tool","content":"{\"temp\":25,\"weather\":\"晴\"}","tool_call_id":"call_123"}
+    ]
+  }'
+```
+
+> **OpenClaw 集成**：本服务兼容 OpenAI `openai-completions` 适配器格式，可直接配置为 OpenClaw 的后端 LLM 服务。将 OpenClaw 的 `base_url` 指向 `http://<host>:30007/v1` 即可。
+
 #### Ollama Chat
 
 ```bash
@@ -358,8 +436,20 @@ curl -X POST http://localhost:30007/config \
 ```bash
 source .venv/bin/activate
 pip install -e ".[test]"
-pytest -q
+pytest -v
 ```
+
+当前共 30 个测试用例，覆盖以下模块：
+
+| 模块 | 测试内容 |
+|------|----------|
+| ConfigStore | 默认值、更新、校验、持久化（写入后重新加载）、原子写入 |
+| ChatService | 默认模型解析、选项合并、流式响应、旧引擎字符串兼容 |
+| ModelManager | 路径解析、LRU 缓存、淘汰停止引擎、shutdown 清理 |
+| LlamaServerEngine | HTTP 推理、SSE 流式解析、stop() 安全、多模态序列化、content=None |
+| LlamaCppEngine | 多模态文本提取、content=None 处理 |
+| Function Calling | tools/tool_choice 参数透传（非流式+流式）、tool_calls 消息序列化 |
+| HTTP API 路由 | health、models、tags、OpenAI chat（流式/非流式）、Ollama chat/generate、config 读写 |
 
 ---
 
@@ -390,3 +480,23 @@ curl -X POST http://localhost:30007/config \
 ### Q: Windows 上编译 llama.cpp 报错
 
 确保使用 **"x64 Native Tools Command Prompt for VS"** 而非普通 CMD/PowerShell。该命令行提供了正确的 MSVC 编译器环境变量。
+
+### Q: 如何启用/禁用视觉（图片理解）能力？
+
+在 `config/config.json` 中设置 `mmproj_path`：
+- **启用**：指向 `mmproj-BF16.gguf` 文件路径
+- **禁用**：设为空字符串 `""`
+
+修改后需重启服务生效（需要重新加载模型）。
+
+> 注意：启用视觉能力会额外占用约 200MB 内存（mmproj 投影层大小）。
+
+### Q: 如何与 OpenClaw 集成？
+
+本服务完全兼容 OpenAI `/v1/chat/completions` 格式（包括 Function Calling），可直接作为 OpenClaw 的后端 LLM：
+
+1. 启动本服务：`uvicorn app.main:app --host 0.0.0.0 --port 30007`
+2. 在 OpenClaw 配置中将 `base_url` 设置为 `http://<服务器IP>:30007/v1`
+3. 模型名称使用 `config.json` 中 `model_mapping` 配置的别名（如 `Qwen3.5-0.8B`）
+
+> 建议使用参数量更大的模型（如 Qwen3.5-7B 或更高）以获得更好的 Function Calling 效果。
