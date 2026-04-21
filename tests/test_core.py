@@ -180,6 +180,41 @@ def test_model_manager_missing_file(tmp_path: Path, monkeypatch):
         manager.get_engine("Qwen3.5-0.8B")
 
 
+def test_model_manager_missing_file_does_not_evict_cached_engine(tmp_path: Path, monkeypatch):
+    """验证缺失模型不会导致已缓存引擎被提前淘汰。"""
+    model_a = tmp_path / "model_a.gguf"
+    model_a.write_text("fake")
+
+    store = ConfigStore(tmp_path / "config.json")
+    store.update(
+        ConfigPatch(
+            model_dir=str(tmp_path),
+            model_mapping={"model-a": model_a.name, "missing": "missing.gguf"},
+            default_model="model-a",
+            max_loaded_models=1,
+        )
+    )
+
+    engines: list[FakeEngine] = []
+
+    def _create(self, path: str):
+        engine = FakeEngine()
+        engines.append(engine)
+        return engine
+
+    monkeypatch.setattr("app.model_manager.ModelManager._create_engine", _create)
+
+    manager = ModelManager(store)
+    manager.get_engine("model-a")
+
+    with pytest.raises(FileNotFoundError):
+        manager.get_engine("missing")
+
+    assert len(engines) == 1
+    assert not engines[0].stopped
+    assert "model-a" in manager._cache
+
+
 def test_model_manager_eviction_calls_stop(tmp_path: Path, monkeypatch):
     """验证缓存淘汰时会调用被淘汰引擎的 stop() 方法。"""
     model_a = tmp_path / "model_a.gguf"
@@ -499,6 +534,121 @@ def test_route_config_get_and_update(test_client):
     resp = test_client.post("/config", json={"n_ctx": 8192})
     assert resp.status_code == 200
     assert resp.json()["n_ctx"] == 8192
+
+
+def test_route_anthropic_messages_non_streaming(test_client):
+    """验证 Anthropic /v1/messages 非流式响应。"""
+    resp = test_client.post(
+        "/v1/messages",
+        headers={"x-api-key": "test-key", "anthropic-version": "2023-06-01"},
+        json={
+            "model": "Qwen3.5-0.8B",
+            "max_tokens": 128,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["type"] == "message"
+    assert data["role"] == "assistant"
+    assert data["content"][0]["type"] == "text"
+    assert data["content"][0]["text"] == "ok"
+    assert data["stop_reason"] == "end_turn"
+
+
+def test_route_anthropic_messages_streaming(test_client):
+    """验证 Anthropic /v1/messages 流式 SSE 响应。"""
+    resp = test_client.post(
+        "/v1/messages",
+        headers={"x-api-key": "test-key", "anthropic-version": "2023-06-01"},
+        json={
+            "model": "Qwen3.5-0.8B",
+            "max_tokens": 128,
+            "stream": True,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers["content-type"]
+    body = resp.text
+    assert "event: message_start" in body
+    assert "event: content_block_start" in body
+    assert "event: content_block_delta" in body
+    assert "event: content_block_stop" in body
+    assert "event: message_delta" in body
+    assert "event: message_stop" in body
+
+
+def test_route_anthropic_messages_normalizes_request(monkeypatch, test_client):
+    """验证 Anthropic 请求被转换为内部 Message 和 overrides。"""
+    captured = {}
+
+    def fake_chat(self, model, messages, options=None, overrides=None):
+        captured["model"] = model
+        captured["messages"] = messages
+        captured["options"] = options
+        captured["overrides"] = overrides
+        return model or "Qwen3.5-0.8B", {
+            "index": 0,
+            "message": {"role": "assistant", "content": "ok"},
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr("app.service.ChatService.chat", fake_chat)
+
+    resp = test_client.post(
+        "/v1/messages",
+        headers={"x-api-key": "test-key", "anthropic-version": "2023-06-01"},
+        json={
+            "model": "Qwen3.5-0.8B",
+            "system": "be concise",
+            "max_tokens": 256,
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "description": "获取天气",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "看下这张图"},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "ZmFrZQ==",
+                            },
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert captured["model"] == "Qwen3.5-0.8B"
+    assert captured["options"] is None
+    assert captured["messages"][0].role == "system"
+    assert captured["messages"][0].content == "be concise"
+    assert captured["messages"][1].role == "user"
+    assert captured["messages"][1].content[0].type == "text"
+    assert captured["messages"][1].content[0].text == "看下这张图"
+    assert captured["messages"][1].content[1].type == "image_url"
+    assert captured["messages"][1].content[1].image_url["url"].startswith("data:image/png;base64,")
+    assert captured["overrides"]["max_tokens"] == 256
+    assert captured["overrides"]["temperature"] == 0.2
+    assert captured["overrides"]["top_p"] == 0.8
+    assert captured["overrides"]["tools"][0]["type"] == "function"
+    assert captured["overrides"]["tools"][0]["function"]["name"] == "get_weather"
 
 
 # ─── Function Calling 参数透传测试 ───

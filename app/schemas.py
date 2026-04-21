@@ -34,6 +34,66 @@ class OpenAIChatRequest(BaseModel):
     tool_choice: str | dict[str, Any] | None = None
 
 
+class AnthropicTextBlock(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class AnthropicImageSource(BaseModel):
+    type: Literal["base64"]
+    media_type: str
+    data: str
+
+
+class AnthropicImageBlock(BaseModel):
+    type: Literal["image"]
+    source: AnthropicImageSource
+
+
+class AnthropicToolUseBlock(BaseModel):
+    type: Literal["tool_use"]
+    id: str
+    name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnthropicToolResultBlock(BaseModel):
+    type: Literal["tool_result"]
+    tool_use_id: str
+    content: str | list[AnthropicTextBlock] | None = None
+    is_error: bool = False
+
+
+AnthropicContentBlock = (
+    AnthropicTextBlock
+    | AnthropicImageBlock
+    | AnthropicToolUseBlock
+    | AnthropicToolResultBlock
+)
+
+
+class AnthropicMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str | list[AnthropicContentBlock]
+
+
+class AnthropicTool(BaseModel):
+    name: str
+    description: str | None = None
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class AnthropicMessageRequest(BaseModel):
+    model: str | None = None
+    messages: list[AnthropicMessage]
+    system: str | list[AnthropicTextBlock] | None = None
+    stream: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    tools: list[AnthropicTool] | None = None
+
+
 class OllamaChatRequest(BaseModel):
     model: str | None = None
     messages: list[Message]

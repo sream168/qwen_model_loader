@@ -4,10 +4,12 @@ import json
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.anthropic import choice_to_message_response, request_to_messages, request_to_overrides, stream_events
 from app.schemas import (
+    AnthropicMessageRequest,
     ConfigPatch,
     HealthResponse,
     Message,
@@ -117,6 +119,29 @@ def openai_chat(req: OpenAIChatRequest, service: ChatService = Depends(get_servi
         "model": model,
         "choices": [choice],
     }
+
+
+@router.post("/v1/messages")
+def anthropic_messages(
+    req: AnthropicMessageRequest,
+    service: ChatService = Depends(get_service),
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+    anthropic_version: str | None = Header(default=None, alias="anthropic-version"),
+):
+    _ = (x_api_key, anthropic_version)
+    request_id = f"msg_{uuid4().hex[:24]}"
+    messages = request_to_messages(req)
+    overrides = request_to_overrides(req)
+
+    if req.stream:
+        model, generator = service.stream_chat(req.model, messages, overrides=overrides)
+        return StreamingResponse(
+            stream_events(request_id, model, generator),
+            media_type="text/event-stream",
+        )
+
+    model, choice = service.chat(req.model, messages, overrides=overrides)
+    return choice_to_message_response(request_id, model, choice)
 
 
 @router.post("/api/chat")

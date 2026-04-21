@@ -76,6 +76,15 @@ class ModelManager:
                 )
             self._creating.add(model_name)
 
+        try:
+            # 先校验目标模型路径，避免目标模型无效时错误淘汰已有缓存。
+            model_path = self._resolve_path(model_name)
+        except Exception:
+            with self._lock:
+                self._creating.discard(model_name)
+            raise
+
+        with self._lock:
             # 先淘汰旧引擎释放内存，再创建新引擎（内存安全优先）
             cfg = self._config_store.get()
             evicted: list[tuple[str, BaseEngine]] = []
@@ -92,7 +101,6 @@ class ModelManager:
                 logger.exception("停止被淘汰引擎 %s 时出错", evicted_name)
 
         # 锁外创建新引擎（耗时操作）
-        model_path = self._resolve_path(model_name)
         engine: BaseEngine | None = None
         try:
             engine = self._create_engine(model_path)

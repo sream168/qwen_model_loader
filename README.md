@@ -1,6 +1,6 @@
 # Qwen Offline Model Loader
 
-本地离线 GGUF 模型推理服务，支持 Qwen 3.5 等最新模型架构，提供 OpenAI / Ollama 兼容 API。
+本地离线 GGUF 模型推理服务，支持 Qwen 3.5 等最新模型架构，提供 OpenAI / Ollama / Anthropic 兼容 API。
 
 ## 特性
 
@@ -8,6 +8,7 @@
 - **多模态视觉**：支持图片理解（通过 `mmproj` 视觉投影文件），兼容 OpenAI Vision 格式
 - **Function Calling**：透传 `tools` / `tool_choice` 参数，支持工具调用（兼容 OpenClaw 等 AI 助手框架）
 - **OpenAI 兼容**：`/v1/chat/completions`（支持流式 SSE、多模态、Function Calling）
+- **Anthropic 兼容**：`/v1/messages`（支持基础 Claude Code 连接、流式 SSE、文本/图片输入、基础 tools 映射）
 - **Ollama 兼容**：`/api/chat`、`/api/generate`（支持流式 NDJSON）
 - **通用接口**：`/health`、`/models`、`/v1/models`、`/api/tags`
 - **配置管理**：`/config` 获取和动态更新模型映射及推理参数
@@ -24,6 +25,7 @@ qwen_model_loader/
 │   ├── config_store.py          # 线程安全的配置存储（原子性写入）
 │   ├── model_manager.py         # 模型 LRU 缓存 + 引擎工厂
 │   ├── service.py               # 业务逻辑层
+│   ├── anthropic.py            # Anthropic 请求/响应适配
 │   ├── schemas.py               # Pydantic 数据模型
 │   ├── api/
 │   │   ├── __init__.py
@@ -130,6 +132,17 @@ curl -X POST http://localhost:30007/v1/chat/completions \
 curl -N -X POST http://localhost:30007/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"你好"}],"stream":true}'
+
+# Anthropic / Claude Code 兼容接口
+curl -X POST http://localhost:30007/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: local-test" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model":"Qwen3.5-0.8B",
+    "max_tokens":128,
+    "messages":[{"role":"user","content":"你好"}]
+  }'
 ```
 
 ---
